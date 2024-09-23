@@ -1,0 +1,108 @@
+#include <Arduino.h>
+#include <Wire.h>    // Incluye librería para interfaz I2C
+#include <RTClib.h>  // Incluye librería para el manejo del módulo RTC
+#include "SD.h"
+#include "SPI.h"
+
+RTC_DS3231 rtc;      // Crea objeto del tipo RTC_DS3231
+
+#define LEVEL_SENSOR 4  // Pin del sensor de nivel
+#define SERIAL_SPEED 115200
+#define SD_CS_PIN 5  // Pin CS para la tarjeta SD
+
+float valorPrevio = 0.0;
+int alturaMaxima = 600;
+float RaCisterna = 7.50;
+const int margenCambio = 3; // Margen de cambio en centímetros
+File archivo;
+bool sdDisponible = false;  // Variable para verificar si la SD está disponible
+
+// Funciones
+void guardar_datosSD(int altura, float voltios);
+void mostrar_cambio_en_serial(int altura, float voltios, String fechaHora);
+
+void setup() {
+  Serial.begin(SERIAL_SPEED);
+  Serial.println("Inicio del programa");
+
+  if (!rtc.begin()) { // Si falla la inicialización del módulo RTC
+    Serial.println("Módulo RTC no encontrado !");
+    while (1); // Bucle infinito que detiene la ejecución del programa
+  }
+
+  if (!SD.begin(SD_CS_PIN)) { // Intentar inicializar la tarjeta SD
+    Serial.println("Error en el módulo SD. Los datos no se guardarán en la SD.");
+    sdDisponible = false;
+  } else {
+    Serial.println("Módulo SD inicializado");
+    sdDisponible = true;
+
+    archivo = SD.open("/Datos.csv", FILE_WRITE);
+    if (archivo) {
+      archivo.println("Fecha y Hora, Nivel Voltios, Altura actual");
+      archivo.close();
+    } else {
+      Serial.println("Error para la creación del archivo en la SD");
+    }
+  }
+}
+
+void loop() {
+  int portValue = analogRead(LEVEL_SENSOR); // Leer el valor del sensor de nivel
+  float nivelVoltios = (portValue * 3.3) / 4095.0;
+
+  float valorsinsumergir = 0.48;
+  float diferenciaVoltaje = (nivelVoltios - valorsinsumergir);
+  float valorMaximoAbsoluto = 3.3 - valorsinsumergir;
+  int alturaActual = (diferenciaVoltaje * alturaMaxima) / valorMaximoAbsoluto;
+
+  if (abs(alturaActual - valorPrevio) >= margenCambio) { // Verificar si hay un cambio de más o menos tres centímetros
+    DateTime fecha = rtc.now(); // Obtener la fecha y hora actual
+    String fechaHora = String(fecha.day()) + "/" + 
+                       String(fecha.month()) + "/" + 
+                       String(fecha.year()) + " " + 
+                       String(fecha.hour()) + ":" + 
+                       String(fecha.minute()) + ":" + 
+                       String(fecha.second());
+    if (sdDisponible) {
+      guardar_datosSD(alturaActual, nivelVoltios); // Guardar los datos en la SD
+    }
+    mostrar_cambio_en_serial(alturaActual, nivelVoltios, fechaHora); // Mostrar los cambios en el monitor serial
+    valorPrevio = alturaActual; // Actualizar el valor previo
+  }
+
+  delay(1000); // Esperar 1 segundo antes de la próxima lectura
+}
+
+void guardar_datosSD(int alturaActual, float nivelVoltios) {
+  DateTime fecha = rtc.now(); // Obtener la fecha y hora actual
+
+  // Formatear la fecha y hora
+  String fechaHora = String(fecha.day()) + "/" + 
+                     String(fecha.month()) + "/" + 
+                     String(fecha.year()) + " " + 
+                     String(fecha.hour()) + ":" + 
+                     String(fecha.minute()) + ":" + 
+                     String(fecha.second());
+
+  // Abrir el archivo para escribir los datos
+  archivo = SD.open("/Datos.csv", FILE_APPEND);
+  if (archivo) {
+    String datos = fechaHora + ", " + String(nivelVoltios) + ", " + String(alturaActual);
+    archivo.println(datos);
+    archivo.close();
+  } else {
+    Serial.println("Error al abrir el archivo para escribir en la SD");
+  }
+}
+
+void mostrar_cambio_en_serial(int altura, float voltios, String fechaHora) {
+  Serial.println("Cambio detectado:");
+  Serial.print("Fecha y Hora: ");
+  Serial.println(fechaHora);
+  Serial.print("Nivel Voltios: ");
+  Serial.println(voltios);
+  Serial.print("Altura en centímetros: ");
+  Serial.println(altura);
+  Serial.println("------------------------");
+}
