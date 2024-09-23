@@ -1,0 +1,123 @@
+#include <Wire.h>
+#include <RTClib.h>
+#include <WiFiMulti.h>
+#include <InfluxDbClient.h>
+#include <InfluxDbCloud.h>
+
+// Configuración del RTC DS3231
+RTC_DS3231 rtc;
+
+// Pines y constantes
+#define LEVEL_SENSOR 4  // Pin del sensor de nivel
+#define SERIAL_SPEED 115200
+
+float valorPrevio = 0.0;
+int alturaMaxima = 600;
+float RaCisterna = 7.50;
+const int margenCambio = 3;  // Margen de cambio en centímetros
+
+// Configuración WiFi e InfluxDB
+WiFiMulti wifiMulti;
+
+// WiFi AP SSID
+#define WIFI_SSID "YOUR_WIFI_SSID"
+// WiFi password
+#define WIFI_PASSWORD "YOUR_WIFI_PASSWORD"
+
+#define INFLUXDB_URL "https://us-east-1-1.aws.cloud2.influxdata.com"
+#define INFLUXDB_TOKEN "uNMqczGWVjeA1FN_YKn349zeR3TjROwz77JvrqCoAeaSNtpW9OozzEeNGW6-tLH5o8-w0yFu5onB-s6FyQQVag=="
+#define INFLUXDB_ORG "934bc236cfda0d23"
+#define INFLUXDB_BUCKET "Base_Sinchal"
+
+#define TZ_INFO "UTC-5"
+
+// Inicializar InfluxDBClient
+InfluxDBClient client(INFLUXDB_URL, INFLUXDB_ORG, INFLUXDB_BUCKET, INFLUXDB_TOKEN, InfluxDbCloud2CACert);
+Point sensor("nivel_cisterna");
+
+void setup() {
+  Serial.begin(SERIAL_SPEED);
+  Serial.println("Inicio del programa");
+
+  // Inicialización del módulo RTC
+  if (!rtc.begin()) {
+    Serial.println("Módulo RTC no encontrado!");
+    while (1);
+  }
+
+  // Configuración WiFi
+  WiFi.mode(WIFI_STA);
+  wifiMulti.addAP(WIFI_SSID, WIFI_PASSWORD);
+  Serial.print("Conectando a WiFi");
+  while (wifiMulti.run() != WL_CONNECTED) {
+    Serial.print(".");
+    delay(100);
+  }
+  Serial.println("\nConexión WiFi establecida");
+
+  // Sincronización de hora para la validación del certificado
+  timeSync(TZ_INFO, "pool.ntp.org", "time.nis.gov");
+
+  // Verificación de la conexión a InfluxDB
+  if (client.validateConnection()) {
+    Serial.print("Conectado a InfluxDB: ");
+    Serial.println(client.getServerUrl());
+  } else {
+    Serial.print("Fallo en la conexión a InfluxDB: ");
+    Serial.println(client.getLastErrorMessage());
+  }
+
+  // Configurar etiquetas para los datos
+  sensor.addTag("device", "ESP32");
+  sensor.addTag("SSID", WiFi.SSID());
+}
+
+void loop() {
+  int portValue = analogRead(LEVEL_SENSOR);  // Leer el valor del sensor de nivel
+  float nivelVoltios = (portValue * 3.3) / 4095.0;
+
+  float valorsinsumergir = 0.48;
+  float diferenciaVoltaje = (nivelVoltios - valorsinsumergir);
+  float valorMaximoAbsoluto = 3.3 - valorsinsumergir;
+  int alturaActual = (diferenciaVoltaje * alturaMaxima) / valorMaximoAbsoluto;
+
+  if (abs(alturaActual - valorPrevio) >= margenCambio) {
+    DateTime fecha = rtc.now();  // Obtener la fecha y hora actual
+
+    // Formatear la fecha y hora según lo requerido: AAAA, MM, Hora
+    String fechaHora = String(fecha.year()) + "," + 
+                       String(fecha.month()) + ", " + 
+                       String(fecha.hour()) + ":" + 
+                       String(fecha.minute()) + ":" + 
+                       String(fecha.second());
+
+    enviar_datos_influxDB(fechaHora, alturaActual, nivelVoltios);  // Enviar los datos a InfluxDB
+    mostrar_cambio_en_serial(fechaHora, alturaActual, nivelVoltios);  // Mostrar los cambios en el monitor serial
+    valorPrevio = alturaActual;  // Actualizar el valor previo
+  }
+
+  delay(1000);  // Esperar 1 segundo antes de la próxima lectura
+}
+
+void enviar_datos_influxDB(String fechaHora, int alturaActual, float nivelVoltios) {
+  sensor.clearFields();
+  sensor.addField("nivel_voltios", nivelVoltios);
+  sensor.addField("altura_cm", alturaActual);
+
+  // Enviar los datos a InfluxDB
+  if (!client.writePoint(sensor)) {
+    Serial.print("InfluxDB write failed: ");
+    Serial.println(client.getLastErrorMessage());
+  }
+}
+
+void mostrar_cambio_en_serial(String fechaHora, int altura, float voltios) {
+  Serial.println("Cambio detectado:");
+  Serial.print("Fecha y Hora: ");
+  Serial.println(fechaHora);
+  Serial.print("Nivel Voltios: ");
+  Serial.println(voltios);
+  Serial.print("Altura en centímetros: ");
+  Serial.println(altura);
+  Serial.println("------------------------");
+}
